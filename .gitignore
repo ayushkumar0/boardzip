@@ -1,0 +1,17 @@
+# Personal Pinterest exports and runtime evidence
+exports/
+test-output/
+tests/live-board.cjs
+# Built distributions and the user's extracted installation
+BoardZip-Chrome-Extension/
+BoardZip-Chrome-Extension.zip
+BoardZip-Pinterest-Figma-Kit.zip
+docs/downloads/
+# Local tooling and filesystem metadata
+node_modules/
+__pycache__/
+.DS_Store
+._*
+*.log
+.env
+.env.*

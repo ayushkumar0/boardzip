@@ -1,0 +1,152 @@
+<!doctype html><html lang="en"><head><meta charset="UTF-8"><style>
+*{box-sizing:border-box}body{margin:0;padding:22px;font:13px system-ui,sans-serif;color:#19372d;background:#f4f3ec}h1{font-size:27px;letter-spacing:-1px;margin:0 0 5px}h2{font-size:17px;margin:0 0 14px}p{line-height:1.55;color:#637365}section{background:white;border:1px solid #dde3d8;border-radius:14px;padding:18px;margin:16px 0}label{display:block;font-size:12px;margin:12px 0 7px}textarea{width:100%;height:105px;resize:vertical;border:1px solid #cdd6ca;border-radius:8px;padding:10px;font:11px monospace}button,a.save{border:0;border-radius:8px;background:#244f3b;color:white;padding:11px 13px;cursor:pointer;font-size:12px;display:inline-block;text-decoration:none;margin:5px 5px 0 0}.secondary{background:#eef1e7;color:#244f3b}button:disabled{opacity:.4;cursor:default}input[type=file]{max-width:100%;font-size:11px}input[type=number]{width:72px;padding:7px;border:1px solid #cdd6ca;border-radius:6px}select{padding:7px;border:1px solid #cdd6ca;border-radius:6px}.row{display:flex;gap:14px;flex-wrap:wrap}.row label{margin-top:12px}.small{font-size:11px}#status{white-space:pre-wrap;background:#e9efdc;padding:12px;border-radius:8px;font-size:12px}#selection{font-size:11px;color:#748277}#files{margin-top:12px}[hidden]{display:none!important}progress{width:100%;accent-color:#6c8a39;height:8px}nav{margin-top:16px}button:focus-visible,a:focus-visible,input:focus-visible,textarea:focus-visible{outline:3px solid #94b450;outline-offset:2px}
+</style></head><body><h1>BoardZip ↔ Figma</h1><p class="small">Your Pinterest references. Your Figma creations.</p><nav><button id="import-tab">Pinterest → Figma</button><button id="export-tab" class="secondary">Export / Pinterest</button></nav>
+<section id="import-view"><h2>Import selected Pinterest pins</h2><p class="small">In BoardZip for Chrome, extract a board, select pins, and click Copy selected to Figma. Paste below or load the transfer file.</p><textarea id="transfer" placeholder="Paste BoardZip transfer here" aria-label="Pinterest transfer"></textarea><label for="import-file">Or load a transfer JSON file</label><input id="import-file" type="file" accept=".json,application/json"><div class="row"><label>Columns<br><input id="columns" type="number" min="1" max="12" value="4"></label><label>Image width<br><input id="width" type="number" min="0" max="5000" value="360"></label><label>Gap<br><input id="gap" type="number" min="0" max="500" value="24"></label></div><p class="small">Width 0 places images at their original pixel size. Changing canvas width keeps the embedded image at its source resolution.</p><button id="import">Import to canvas</button><button id="cancel" class="secondary" disabled>Stop import</button></section>
+<section id="export-view" hidden><h2>Export your selected area</h2><p id="selection">No selection</p><p class="small">Select layers or frames. For an exact crop, draw a Figma slice and select it. Combine multiple selections into one image, or export each separately.</p><div class="row"><label>Format<br><select id="format"><option>PNG</option><option>JPG</option><option>SVG</option><option>PDF</option></select></label><label>Scale<br><select id="scale"><option value="1">1×</option><option value="2" selected>2×</option><option value="3">3×</option><option value="4">4×</option></select></label></div><label><input id="combined" type="checkbox"> Combine selection into one area (Figma Design)</label><button id="export">Download selection ZIP</button><button id="pinterest">Prepare Pinterest transfer</button><p class="small">Pinterest transfers render as PNG. Load the resulting JSON file in Chrome's BoardZip → Figma → Pinterest. Choose the board and publish in Pinterest.</p><button id="copy-export" class="secondary" hidden>Copy Pinterest transfer</button><button id="source" class="secondary" hidden>Open selected pin source</button></section>
+<progress id="progress" max="100" value="0"></progress><p id="status" role="status">Ready. Paste a Pinterest transfer or select something on the canvas.</p><div id="files"></div><script>function boardURL(value) {
+  const u = new URL(value);
+  if (u.protocol !== 'https:' || !/^([a-z0-9-]+\.)?pinterest\.(com|co\.uk|in|ca|de|fr|com\.au)$/.test(u.hostname)) throw new Error('Open a Pinterest board on a supported Pinterest domain.');
+  const parts = u.pathname.split('/').filter(Boolean);
+  if (parts.length < 2 || parts.length > 3 || ['pin','search','ideas','today','settings','business','_'].includes(parts[0])) throw new Error('Open a board or board section, not a pin, profile, or home feed.');
+  u.search = ''; u.hash = ''; u.pathname = '/' + parts.join('/') + '/';
+  return u.href;
+}
+function safeName(s) { return String(s || 'Pinterest-board').normalize('NFKC').replace(/[<>:"/\\|?*\x00-\x1f]/g, '-').replace(/\.+$/g, '').trim().slice(0,100) || 'Pinterest-board'; }
+function candidates(urls) {
+  const originals = [], resized = [];
+  for (const value of urls) {
+    try {
+      const u = new URL(value);
+      if (u.protocol !== 'https:' || u.hostname !== 'i.pinimg.com') continue;
+      const m = u.pathname.match(/^\/(originals|\d+x[^/]*)\/(.+)\.(jpg|jpeg|png|webp|gif|avif)$/i);
+      if (!m) continue;
+      originals.push(`https://i.pinimg.com/originals/${m[2]}.${m[3]}`);
+      for (const ext of ['png','jpg','webp','gif','jpeg','avif']) originals.push(`https://i.pinimg.com/originals/${m[2]}.${ext}`);
+      resized.push(u.href);
+    } catch {}
+  }
+  resized.sort((a,b) => (Number(b.match(/\/(\d+)x/)?.[1]) || 0) - (Number(a.match(/\/(\d+)x/)?.[1]) || 0));
+  return [...new Set([...originals, ...resized])];
+}
+const table = Uint32Array.from({length:256}, (_, n) => { for(let j=0;j<8;j++) n = (n&1) ? 0xedb88320^(n>>>1) : n>>>1; return n>>>0; });
+function crc32(data) { let c=0xffffffff; for(const b of data) c=table[(c^b)&255]^(c>>>8); return (c^0xffffffff)>>>0; }
+class Zip {
+  constructor() { this.parts=[]; this.entries=[]; this.size=0; }
+  add(name, data) {
+    if (!(data instanceof Uint8Array)) data=new TextEncoder().encode(data);
+    const n=new TextEncoder().encode(name), crc=crc32(data);
+    if (this.entries.length >= 65534 || this.size+data.length > 0xffffffff) throw new Error('ZIP size limit reached.');
+    const header=new Uint8Array(30+n.length), v=new DataView(header.buffer);
+    v.setUint32(0,0x04034b50,true); v.setUint16(4,20,true); v.setUint16(6,0x800,true); v.setUint16(12,33,true);
+    v.setUint32(14,crc,true); v.setUint32(18,data.length,true); v.setUint32(22,data.length,true); v.setUint16(26,n.length,true); header.set(n,30);
+    this.entries.push({n,crc,length:data.length,offset:this.size}); this.parts.push(header,data); this.size+=header.length+data.length;
+  }
+  blob() {
+    const central=[]; let centralSize=0;
+    for (const e of this.entries) {
+      const h=new Uint8Array(46+e.n.length), v=new DataView(h.buffer);
+      v.setUint32(0,0x02014b50,true); v.setUint16(4,20,true); v.setUint16(6,20,true); v.setUint16(8,0x800,true); v.setUint16(14,33,true);
+      v.setUint32(16,e.crc,true); v.setUint32(20,e.length,true); v.setUint32(24,e.length,true); v.setUint16(28,e.n.length,true); v.setUint32(42,e.offset,true); h.set(e.n,46); central.push(h); centralSize+=h.length;
+    }
+    const end=new Uint8Array(22), v=new DataView(end.buffer); v.setUint32(0,0x06054b50,true); v.setUint16(8,this.entries.length,true); v.setUint16(10,this.entries.length,true); v.setUint32(12,centralSize,true); v.setUint32(16,this.size,true);
+    return new Blob([...this.parts,...central,end],{type:'application/zip'});
+  }
+}
+function pinterestTransfer(pins, {board='',title='',strict=true}={}) {
+  if(!Array.isArray(pins) || !pins.length) throw new Error('Select at least one pin.');
+  return {kind:'boardzip/pinterest',version:1,board,title,strict,pins:pins.map(p=>({id:String(p.id),title:String(p.title||''),url:String(p.url||''),images:candidates(p.images)}))};
+}
+function parseTransfer(text,kind) {
+  if(typeof text!=='string' || text.length>300*1024*1024) throw new Error('Transfer file is too large.');
+  const p=JSON.parse(text);
+  if(p.version!==1 || p.kind!==kind) throw new Error('This is not a supported BoardZip transfer.');
+  if(kind==='boardzip/pinterest') {
+    if(!Array.isArray(p.pins)||!p.pins.length) throw new Error('The transfer contains no pins.');
+    p.pins=p.pins.map(pin=>({...pin,id:String(pin.id),title:String(pin.title||'').slice(0,500),images:candidates(Array.isArray(pin.images)?pin.images:[]).filter(u=>!p.strict||new URL(u).pathname.startsWith('/originals/'))}));
+  } else if(kind==='boardzip/figma') {
+    if(!Array.isArray(p.files)||!p.files.length) throw new Error('The transfer contains no exported images.');
+    for(const f of p.files) {
+      if(!['image/png','image/jpeg'].includes(f.type) || typeof f.base64!=='string' || !/^[A-Za-z0-9+/]*={0,2}$/.test(f.base64) || !f.base64.length || f.base64.length>140*1024*1024) throw new Error('Pinterest transfers require PNG or JPEG image data below 100 MB.');
+      f.name=safeName(f.name);f.title=String(f.title||f.name).slice(0,100);
+    }
+  }
+  return p;
+}
+
+const $=id=>document.getElementById(id);let busy=false,stopped=false,requestId=0,exportTransfer='',selectedNodes=[];
+const requests=new Map(),objectURLs=[];
+const status=s=>$('status').textContent=s;
+function send(type,data={}){const id=++requestId;return new Promise((resolve,reject)=>{requests.set(id,{resolve,reject});parent.postMessage({pluginMessage:{type,id,...data}},'*');});}
+function lock(value){busy=value;for(const id of ['import','export','pinterest','copy-export','import-file','format','scale','combined','columns','width','gap'])$(id).disabled=value;$('cancel').disabled=!value;}
+function toggle(exporting){$('import-view').hidden=exporting;$('export-view').hidden=!exporting;$('import-tab').classList.toggle('secondary',exporting);$('export-tab').classList.toggle('secondary',!exporting);}
+$('import-tab').onclick=()=>toggle(false);$('export-tab').onclick=()=>toggle(true);
+window.onmessage=e=>{
+ if(e.source!==parent)return;const m=e.data.pluginMessage;if(!m)return;
+ if(m.type==='selection'){selectedNodes=m.nodes;$('selection').textContent=m.nodes.length?`${m.nodes.length} selected: ${m.nodes.map(n=>n.name).join(', ')}`:'No selection — select something on the canvas';$('source').hidden=!(m.nodes.length===1&&/^https:\/\/(?:[a-z0-9-]+\.)?pinterest\.[^/]+\/pin\/\d+\/?$/.test(m.nodes[0].source));return;}
+ if(m.type==='result'){const r=requests.get(m.id);if(!r)return;requests.delete(m.id);if(m.ok)r.resolve(m.data);else r.reject(new Error(m.error));}
+};
+$('source').onclick=()=>{try{const u=new URL(selectedNodes[0].source);if(/^([a-z0-9-]+\.)?pinterest\.(com|in|co\.uk|ca|de|fr|com\.au)$/.test(u.hostname)&&/^\/pin\/\d+\/?$/.test(u.pathname))window.open(u.href,'_blank','noopener');}catch{}};
+$('import-file').onchange=async()=>{const file=$('import-file').files[0];if(!file)return;if(file.size>300*1024*1024){status('Transfer file is too large.');return;}$('transfer').value=await file.text();};
+$('cancel').onclick=()=>{stopped=true;status('Stopping after the current image. Completed imports will remain on the canvas.');};
+async function fetchPin(pin,strict){
+ for(const url of pin.images){if(stopped)throw new Error('Stopped');const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),18000);
+  try{
+   const r=await fetch(url,{signal:controller.signal,credentials:'omit',referrerPolicy:'no-referrer'});if(!r.ok)continue;
+   const finalURL=new URL(r.url);if(finalURL.hostname!=='i.pinimg.com'||finalURL.protocol!=='https:'||(strict&&!finalURL.pathname.startsWith('/originals/')))continue;
+   const type=r.headers.get('content-type')?.split(';')[0];if(!['image/jpeg','image/png','image/webp','image/gif','image/avif'].includes(type))continue;
+   if(Number(r.headers.get('content-length'))>100*1024*1024){await r.body?.cancel();continue;}
+   const reader=r.body.getReader(),chunks=[];let total=0;
+   while(true){const {done,value}=await reader.read();if(done)break;total+=value.length;if(total>100*1024*1024){await reader.cancel();throw new Error('Image exceeds 100 MB');}chunks.push(value);}
+   const raw=new Blob(chunks,{type});if(!raw.size)continue;
+   // Normalize formats Figma may not accept, while keeping original pixel dimensions.
+   if(['image/webp','image/avif','image/gif'].includes(type)){
+    const bitmap=await createImageBitmap(raw);const canvas=document.createElement('canvas');canvas.width=bitmap.width;canvas.height=bitmap.height;canvas.getContext('2d').drawImage(bitmap,0,0);bitmap.close();
+    const png=await new Promise(resolve=>canvas.toBlob(resolve,'image/png'));if(!png)continue;return new Uint8Array(await png.arrayBuffer());
+   }
+   return new Uint8Array(await raw.arrayBuffer());
+  }catch(e){if(stopped)throw e;}finally{clearTimeout(timer);}
+ }
+ throw new Error(strict?'Original unavailable; pin skipped':'No supported image available');
+}
+$('import').onclick=async()=>{
+ if(busy)return;let transfer;try{transfer=parseTransfer($('transfer').value,'boardzip/pinterest');}catch(e){status(e.message);return;}
+ lock(true);stopped=false;let started=false,count=0,failed=[];
+ try{
+  await send('import-begin',{title:transfer.title,columns:Number($('columns').value),width:Number($('width').value),gap:Number($('gap').value)});started=true;
+  for(let i=0;i<transfer.pins.length&&!stopped;i++){
+   const pin=transfer.pins[i];status(`Importing ${i+1} of ${transfer.pins.length}…`);
+   try{const bytes=await fetchPin(pin,transfer.strict);if(stopped)break;await send('import-image',{bytes,pinId:pin.id,pinURL:pin.url,title:pin.title});count++;}
+   catch(e){if(stopped)break;failed.push({id:pin.id,error:e.message});}
+   $('progress').value=(i+1)/transfer.pins.length*100;
+  }
+  await send('import-finish');started=false;
+  status(`${count} images imported. ${failed.length} failed.${stopped?' Import stopped early.':''}${failed.length?'\n'+failed.map(p=>`${p.id}: ${p.error}`).join('\n'):''}`);
+ }catch(e){status(e.message);}finally{if(started)await send('import-finish').catch(()=>{});lock(false);}
+};
+function download(blob,name){const u=URL.createObjectURL(blob);objectURLs.push(u);const a=document.createElement('a');a.href=u;a.download=name;a.textContent=`Save ${name}`;a.className='save';$('files').append(a);a.click();}
+function resetFiles(){$('files').replaceChildren();for(const u of objectURLs)URL.revokeObjectURL(u);objectURLs.length=0;$('copy-export').hidden=true;exportTransfer='';}
+function base64(bytes){let out='';for(let i=0;i<bytes.length;i+=32768)out+=String.fromCharCode(...bytes.subarray(i,i+32768));return btoa(out);}
+async function exportSelection(pinterest){
+ if(busy)return;lock(true);resetFiles();$('progress').removeAttribute('value');status('Rendering selection with Figma’s export engine…');
+ try{
+  const format=pinterest?'PNG':$('format').value;const result=await send('export-selection',{format,scale:Number($('scale').value),combined:$('combined').checked});
+  if(!result.files.length)throw new Error('No selected nodes could be exported. '+result.failures.map(f=>f.error).join('; '));
+  const extension={PNG:'png',JPG:'jpg',SVG:'svg',PDF:'pdf'}[format],mime={PNG:'image/png',JPG:'image/jpeg',SVG:'image/svg+xml',PDF:'application/pdf'}[format];
+  if(pinterest){
+   const transfer={kind:'boardzip/figma',version:1,created:new Date().toISOString(),scale:result.scale,failures:result.failures,files:result.files.map((f,i)=>({name:`${String(i+1).padStart(3,'0')}-${safeName(f.name)}.${extension}`,title:f.name,nodeId:f.nodeId,type:mime,base64:base64(new Uint8Array(f.bytes))}))};
+   exportTransfer=JSON.stringify(transfer);if(exportTransfer.length>300*1024*1024)throw new Error('Transfer exceeds 300 MB. Export fewer selections per transfer.');
+   download(new Blob([exportTransfer],{type:'application/json'}),'Figma-to-Pinterest.boardzip.json');$('copy-export').hidden=false;
+   status(`${transfer.files.length} PNG images prepared. Load the JSON in Chrome’s BoardZip → Figma → Pinterest.${result.failures.length?' Some nodes failed; see the transfer report.':''}`);
+  }else{
+   let zip=new Zip(),part=1,filesInPart=0;const report={created:new Date().toISOString(),format,scale:result.scale,combined:$('combined').checked,failures:result.failures,files:[]};
+   const flush=()=>{zip.add('export-report.json',JSON.stringify(report,null,2));download(zip.blob(),`Figma-selection-part-${String(part).padStart(3,'0')}.zip`);zip=new Zip();part++;filesInPart=0;};
+   result.files.forEach((f,i)=>{const bytes=new Uint8Array(f.bytes);if(zip.size+bytes.length>200*1024*1024&&filesInPart)flush();const name=`${String(i+1).padStart(3,'0')}-${safeName(f.name)}.${extension}`;zip.add(name,bytes);filesInPart++;report.files.push({name,nodeId:f.nodeId,bytes:bytes.length,part});});flush();
+   status(`${result.files.length} exports packaged in ${part-1} ZIP archive(s). ${result.failures.length} nodes failed. Save links remain available below.`);
+  }
+  $('progress').value=100;
+ }catch(e){status(e.message);$('progress').value=0;}finally{lock(false);}
+}
+$('export').onclick=()=>exportSelection(false);$('pinterest').onclick=()=>exportSelection(true);
+$('copy-export').onclick=async()=>{if(!exportTransfer)return;try{await navigator.clipboard.writeText(exportTransfer);status('Pinterest transfer copied. You can also use the saved JSON file in Chrome.');}catch{const t=document.createElement('textarea');t.value=exportTransfer;document.body.append(t);t.select();const ok=document.execCommand('copy');t.remove();status(ok?'Pinterest transfer copied.':'Clipboard unavailable. Use the saved JSON transfer file.');}};
+parent.postMessage({pluginMessage:{type:'ready'}},'*');
+</script></body></html>
